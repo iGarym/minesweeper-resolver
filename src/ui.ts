@@ -10,11 +10,11 @@ export function createApp(root: HTMLDivElement) {
         <div class="row">
           <div class="field">
             <label for="rows">行</label>
-            <input id="rows" type="number" inputmode="numeric" min="1" max="40" value="16" />
+            <input id="rows" type="number" inputmode="numeric" min="1" max="20" value="10" />
           </div>
           <div class="field">
             <label for="cols">列</label>
-            <input id="cols" type="number" inputmode="numeric" min="1" max="60" value="30" />
+            <input id="cols" type="number" inputmode="numeric" min="1" max="20" value="10" />
           </div>
           <div class="field">
             <label for="mines">雷（可选）</label>
@@ -48,7 +48,6 @@ export function createApp(root: HTMLDivElement) {
 
       <div class="keypad" data-role="keypad">
         <div class="keyGrid" data-role="keys"></div>
-        <div class="footerNote" data-role="selectedInfo">未选中格子</div>
       </div>
     </div>
   `);
@@ -65,9 +64,8 @@ export function createApp(root: HTMLDivElement) {
   const warningsEl = el.querySelector<HTMLDivElement>('[data-role="warnings"]')!;
   const keypadEl = el.querySelector<HTMLDivElement>('[data-role="keypad"]')!;
   const keysEl = el.querySelector<HTMLDivElement>('[data-role="keys"]')!;
-  const selectedInfoEl = el.querySelector<HTMLDivElement>('[data-role="selectedInfo"]')!;
 
-  let board: Board = createBoard(16, 30);
+  let board: Board = createBoard(10, 10);
   let totalMines: number | null = null;
   let selected: CellId | null = null;
   let suggestions = new Map<CellId, Suggestion>();
@@ -75,31 +73,52 @@ export function createApp(root: HTMLDivElement) {
 
   function renderBoard() {
     // 只负责把 board/suggestions/selected 渲染到 DOM；不做任何推理或状态修改。
-    boardEl.style.gridTemplateColumns = `repeat(${board.cols}, var(--cell-size))`;
+    boardEl.style.gridTemplateColumns = `repeat(${board.cols + 1}, var(--cell-size))`;
     const frag = document.createDocumentFragment();
 
     const selectedRC = selected === null ? null : idToRC(board.cols, selected);
 
-    for (let id = 0; id < board.size; id++) {
-      const st = board.getStatus(id);
-      const btn = document.createElement('button');
-      btn.className = 'cell';
-      btn.type = 'button';
-      btn.dataset.id = String(id);
-      btn.dataset.status = st;
-      btn.setAttribute('aria-label', cellAria(board, id));
-      btn.textContent = cellText(board, id);
-      if (selected === id) btn.classList.add('selected');
-      if (selectedRC) {
-        const rc = idToRC(board.cols, id);
-        const dr = Math.abs(rc.r - selectedRC.r);
-        const dc = Math.abs(rc.c - selectedRC.c);
-        if (dr <= 1 && dc <= 1) btn.classList.add('near-selected');
+    // Corner placeholder
+    const corner = document.createElement('div');
+    corner.className = 'axis axis-corner';
+    frag.appendChild(corner);
+
+    // Column labels: A, B, C...
+    for (let c = 0; c < board.cols; c++) {
+      const d = document.createElement('div');
+      d.className = 'axis axis-col';
+      d.textContent = String.fromCharCode('A'.charCodeAt(0) + c);
+      frag.appendChild(d);
+    }
+
+    // Rows: row label + cells
+    for (let r = 0; r < board.rows; r++) {
+      const rowLabel = document.createElement('div');
+      rowLabel.className = 'axis axis-row';
+      rowLabel.textContent = String(r + 1);
+      frag.appendChild(rowLabel);
+
+      for (let c = 0; c < board.cols; c++) {
+        const id = r * board.cols + c;
+        const st = board.getStatus(id);
+        const btn = document.createElement('button');
+        btn.className = 'cell';
+        btn.type = 'button';
+        btn.dataset.id = String(id);
+        btn.dataset.status = st;
+        btn.setAttribute('aria-label', cellAria(board, id));
+        btn.textContent = cellText(board, id);
+        if (selected === id) btn.classList.add('selected');
+        if (selectedRC) {
+          const dr = Math.abs(r - selectedRC.r);
+          const dc = Math.abs(c - selectedRC.c);
+          if (dr <= 1 && dc <= 1) btn.classList.add('near-selected');
+        }
+        const sug = suggestions.get(id) ?? 'none';
+        if (sug === 'safe') btn.classList.add('suggest-safe');
+        if (sug === 'mine') btn.classList.add('suggest-mine');
+        frag.appendChild(btn);
       }
-      const sug = suggestions.get(id) ?? 'none';
-      if (sug === 'safe') btn.classList.add('suggest-safe');
-      if (sug === 'mine') btn.classList.add('suggest-mine');
-      frag.appendChild(btn);
     }
     boardEl.replaceChildren(frag);
   }
@@ -150,10 +169,21 @@ export function createApp(root: HTMLDivElement) {
     const isCoarse = window.matchMedia?.('(pointer: coarse)')?.matches ?? false;
     const shouldShow = selected !== null && isCoarse;
     keypadEl.classList.toggle('visible', shouldShow);
-    selectedInfoEl.textContent =
-      selected === null
-        ? '未选中格子'
-        : `当前：(${idToRC(board.cols, selected).r + 1}, ${idToRC(board.cols, selected).c + 1})`;
+
+    // Keypad 是 fixed 浮层；显示时为页面底部留出同等高度，避免遮挡棋盘底部行。
+    const rootStyle = document.documentElement.style;
+    if (!shouldShow) {
+      rootStyle.setProperty('--keypad-space', '0px');
+      return;
+    }
+
+    // 先清零，再在下一帧测量可见高度，避免 display:none 时测量为 0。
+    rootStyle.setProperty('--keypad-space', '0px');
+    requestAnimationFrame(() => {
+      if (!keypadEl.classList.contains('visible')) return;
+      const h = Math.ceil(keypadEl.getBoundingClientRect().height);
+      rootStyle.setProperty('--keypad-space', `${h + 12}px`);
+    });
   }
 
   function clearSuggestions() {
@@ -167,7 +197,7 @@ export function createApp(root: HTMLDivElement) {
   function recomputeCellSize() {
     // Make the board fit without forcing page scroll; keep interactions stable on mobile/desktop.
     const isSmallScreen = window.innerWidth <= 480;
-    const gap = isSmallScreen || board.cols >= 26 ? 2 : 4;
+    const gap = isSmallScreen || board.cols >= 20 ? 2 : 4;
 
     // Use the actual container width (important on desktop when the right-side panel narrows the board area).
     const wrapStyle = window.getComputedStyle(boardWrapEl);
@@ -179,14 +209,20 @@ export function createApp(root: HTMLDivElement) {
     // Height is less strict; keep board reasonably visible without forcing long scroll.
     const maxH = Math.max(200, window.innerHeight * 0.62);
 
-    const cellW = (maxW - gap * (board.cols - 1)) / board.cols;
-    const cellH = (maxH - gap * (board.rows - 1)) / board.rows;
+    const effectiveCols = board.cols + 1;
+    const effectiveRows = board.rows + 1;
+    const cellW = (maxW - gap * (effectiveCols - 1)) / effectiveCols;
+    const cellH = (maxH - gap * (effectiveRows - 1)) / effectiveRows;
 
-    // On mobile we prefer avoiding horizontal scroll, so allow smaller cells.
-    const minCell = isSmallScreen ? 12 : 14;
-    const cell = Math.floor(Math.max(minCell, Math.min(44, Math.min(cellW, cellH))));
+    // Prefer clickable cells; if the board would overflow horizontally, allow boardWrap to scroll instead of shrinking further.
+    const minCell = 20;
+    const idealCell = Math.min(44, Math.min(cellW, cellH));
+    const shouldScrollX = idealCell < minCell;
+    const cell = Math.floor(Math.max(minCell, idealCell));
     document.documentElement.style.setProperty('--cell-gap', `${gap}px`);
     document.documentElement.style.setProperty('--cell-size', `${cell}px`);
+
+    boardWrapEl.style.overflowX = shouldScrollX ? 'auto' : 'hidden';
   }
 
   function selectCell(id: CellId | null) {
@@ -237,25 +273,35 @@ export function createApp(root: HTMLDivElement) {
 
   // Keypad buttons (mobile)
   keysEl.replaceChildren();
-  const keys: Array<{ label: string; onClick: () => void; kind?: 'safe' | 'danger' | 'action' }> =
-    [];
-  for (let n = 0; n <= 8; n++) {
-    keys.push({
-      label: String(n),
-      onClick: () => applyInputToSelected('reveal', n),
-      kind: 'safe',
-    });
-  }
-  keys.push({ label: 'F 标旗', onClick: () => applyInputToSelected('flag'), kind: 'danger' });
-  keys.push({ label: 'U 未知', onClick: () => applyInputToSelected('unknown'), kind: 'action' });
-  keys.push({ label: '取消', onClick: () => selectCell(null), kind: 'action' });
-  for (const k of keys) {
+  const numberOrder = [1, 2, 3, 4, 5, 6, 7, 8, 0];
+  for (const n of numberOrder) {
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'keyBtn';
-    if (k.kind) b.classList.add(k.kind);
+    b.className = 'keyBtn safe';
+    b.textContent = String(n);
+    b.addEventListener('click', () => applyInputToSelected('reveal', n));
+    keysEl.appendChild(b);
+  }
+
+  const actionKeys: Array<{
+    label: string;
+    onClick: () => void;
+    kind: 'danger' | 'action';
+    row: 1 | 2 | 3;
+  }> = [
+    { label: 'F 标旗', onClick: () => applyInputToSelected('flag'), kind: 'danger', row: 1 },
+    { label: 'U 未知', onClick: () => applyInputToSelected('unknown'), kind: 'action', row: 2 },
+    { label: '取消', onClick: () => selectCell(null), kind: 'action', row: 3 },
+  ];
+
+  for (const k of actionKeys) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = `keyBtn ${k.kind} op`;
     if (k.kind === 'action') b.classList.add('action');
     b.textContent = k.label;
+    b.style.gridColumn = '4';
+    b.style.gridRow = String(k.row);
     b.addEventListener('click', k.onClick);
     keysEl.appendChild(b);
   }
@@ -269,8 +315,8 @@ export function createApp(root: HTMLDivElement) {
     if (actionBtn) {
       const action = actionBtn.dataset.action;
       if (action === 'generate') {
-        const r = clampInt(Number(rowsInput.value), 1, 40);
-        const c = clampInt(Number(colsInput.value), 1, 60);
+        const r = clampInt(Number(rowsInput.value), 1, 20);
+        const c = clampInt(Number(colsInput.value), 1, 20);
         const maxMines = r * c;
         minesInput.max = String(maxMines);
 
@@ -338,8 +384,8 @@ export function createApp(root: HTMLDivElement) {
   });
 
   function syncMinesMax() {
-    const r = clampInt(Number(rowsInput.value), 1, 40);
-    const c = clampInt(Number(colsInput.value), 1, 60);
+    const r = clampInt(Number(rowsInput.value), 1, 20);
+    const c = clampInt(Number(colsInput.value), 1, 20);
     minesInput.max = String(r * c);
   }
 
