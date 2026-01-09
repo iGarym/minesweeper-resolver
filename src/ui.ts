@@ -177,12 +177,32 @@ export function createApp(root: HTMLDivElement) {
       return;
     }
 
-    // 先清零，再在下一帧测量可见高度，避免 display:none 时测量为 0。
-    rootStyle.setProperty('--keypad-space', '0px');
-    requestAnimationFrame(() => {
+    const ensureSelectedNotCovered = () => {
+      if (selected === null) return;
       if (!keypadEl.classList.contains('visible')) return;
-      const h = Math.ceil(keypadEl.getBoundingClientRect().height);
-      rootStyle.setProperty('--keypad-space', `${h + 12}px`);
+
+      const keypadRect = keypadEl.getBoundingClientRect();
+      const h = Math.ceil(keypadRect.height);
+      if (h > 0) {
+        rootStyle.setProperty('--keypad-space', `${h + 12}px`);
+      }
+
+      const cellEl = boardEl.querySelector<HTMLButtonElement>(`.cell[data-id="${selected}"]`);
+      if (!cellEl) return;
+
+      const cellRect = cellEl.getBoundingClientRect();
+      const margin = 12;
+      const limitBottom = keypadRect.top - margin;
+      if (cellRect.bottom <= limitBottom) return;
+
+      const delta = cellRect.bottom - limitBottom;
+      window.scrollBy({ top: delta, behavior: 'smooth' });
+    };
+
+    // Important: do NOT clear --keypad-space here; that would shrink the page and cause scroll jumps.
+    // Measure after layout stabilizes.
+    requestAnimationFrame(() => {
+      ensureSelectedNotCovered();
     });
   }
 
